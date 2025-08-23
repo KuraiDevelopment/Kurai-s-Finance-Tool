@@ -1,4 +1,3 @@
-````markdown
 # Finance Tool Project Summary
 
 This document summarizes the key milestones and capabilities developed so far for the personal finance tool.
@@ -40,33 +39,3 @@ To run the command‑line tool or web app, install the following Python packages
 
 ```bash
 pip install pandas xlsxwriter streamlit altair scikit-learn
-````
-
-For PDF and OCR support on Windows:
-
-* Install Poppler (provides `pdftotext` and `pdftoppm`) via the Windows Package Manager: `winget install --id=oschwartz10612.Poppler -e`.
-* Install Tesseract from the official Windows installer or package manager. Note that Tesseract is a free, open‑source OCR engine.
-* Add both Poppler’s `bin` directory and the Tesseract installation directory to your system’s `PATH` environment variable.
-
-## 7. Packaging and Distribution
-
-Multiple ZIP packages were delivered throughout development:
-
-1. **Baseline finance tool** – initial CSV analysis.
-2. **AI integration package** – added suggestions and local shopping recommendations.
-3. **UI enhancements** – interactive editing, budgets, trends and interactive charts.
-4. **PDF & OCR support** – automatically converts PDFs (with or without text) to CSV.
-5. **Enhanced CSV parser** – handles messy CSV exports and adds years to date strings.
-6. **Machine‑learning categorisation** – trains a classifier to reduce uncategorised transactions.
-
-Users should always download the latest package to benefit from all improvements.
-
-## Future Directions
-
-Potential next steps include:
-
-* Enhancing the machine‑learning model with more sophisticated text features or user feedback loops.
-* Adding a small database or file system to save past analyses and track spending over longer periods.
-* Integrating with bank APIs (when available) to pull transactions automatically.
-
-This completes the current milestone of creating a comprehensive, user‑friendly finance analysis tool that can handle diverse input formats and provide actionable insights into spending habits.
