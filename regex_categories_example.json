@@ -1,0 +1,12 @@
+{
+  "(?i)(^|\b)WAL[-\s]*MART(\b|$)": "Shopping",
+  "(?i)(^|\b)MEIJER(\b|$)": "Shopping",
+  "(?i)(^|\b)DOLLAR\s+GENERAL(\b|$)": "Shopping",
+  "(?i)(^|\b)CIRCLE\s*K(\b|$)": "Transportation",
+  "(?i)(^|\b)GIRARD\s*WOK(\b|$)": "Dining",
+  "(?i)(^|\b)APPLE\.COM(\b|$)": "Software Subscription",
+  "(?i)(^|\b)FORD\s+MOTOR\s+CREDIT(\b|$)": "Auto Loan",
+  "(?i)(^|\b)JABS\s*PIZZA(\b|$)": "Dining",
+  "(?i)(^|\b)TACO\s*BELL(\b|$)": "Dining",
+  "(?i)(^|\b)RAISING\s*CANE(?:S)?(\b|$)": "Dining"
+}

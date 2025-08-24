@@ -363,12 +363,26 @@ def categorise_row(
 ) -> str:
     """Assign a category to a transaction description using regex and keyword mapping.
 
-    The algorithm first checks any provided regular expression patterns and
-    returns the associated category on the first match.  If no regex
-    matches, it checks whether any keyword from the ``mapping`` appears
-    as a substring in the description (case‑insensitive).  Keywords are
-    tried in the order they appear in the mapping.  If no match is
-    found, the transaction is labelled as ``'Uncategorized'``.
+    The categorisation routine follows a series of steps to improve
+    accuracy and avoid over–classifying transactions as peer‑to‑peer:
+
+    1. **Normalise** the description to uppercase and strip extraneous
+       store numbers or location suffixes.  This helps match variations
+       in vendor names.
+    2. **Aggregator detection**: If the description indicates a third‑party
+       payment platform such as PayPal, Venmo, Cash App or Zelle, the
+       function attempts to extract the underlying merchant (e.g.
+       ``PAYPAL *WALMART``).  The extracted merchant is then
+       classified using the same regex and keyword mappings; only if
+       no merchant can be resolved does the function return the
+       generic ``"Peer to Peer"`` category.
+    3. **Regular expression matching**: High‑priority regex patterns are
+       checked first.  The first pattern that matches assigns the
+       category.
+    4. **Keyword matching**: If no regex matches, the function
+       searches for keywords from the mapping in order and assigns
+       the corresponding category.
+    5. **Fallback**: If nothing matches, return ``"Uncategorized"``.
 
     Parameters
     ----------
@@ -378,28 +392,88 @@ def categorise_row(
         A mapping of lowercase keywords to category names.
     regex_mapping : dict or None
         A mapping of regex pattern strings to category names.  Patterns
-        are evaluated using :func:`re.search` on the description.  If
-        ``None`` or empty, regex matching is skipped.
+        are evaluated using :func:`re.search` on the normalised
+        description.  If ``None`` or empty, regex matching is skipped.
 
     Returns
     -------
     str
         The assigned category.
     """
-    desc = description.lower() if isinstance(description, str) else ""
-    # Check regex patterns first
+    if not isinstance(description, str):
+        # Guard against non‑string descriptions
+        desc_raw = ""
+    else:
+        desc_raw = description
+
+    # Normalise: uppercase, remove long numeric sequences, store numbers and
+    # trailing state abbreviations/zip codes, and collapse spaces.  This
+    # improves matching consistency across formats such as "WAL‑MART #1234"
+    # and "Walmart Supercenter 0047, OH".
+    def _normalise(d: str) -> str:
+        d = d.upper()
+        # Remove long numeric blobs and store numbers (e.g. "#1234", "ST 0047")
+        d = re.sub(r"[#-]?\d{3,}", " ", d)
+        d = re.sub(r"\bST\s*\d{2,}\b", " ", d)
+        # Remove trailing city/state/zip codes (", OH", ", OH 44512")
+        d = re.sub(r",\s*[A-Z]{2}(\s+\d{5})?$", "", d)
+        # Collapse multiple whitespace
+        d = re.sub(r"\s+", " ", d).strip()
+        return d
+
+    desc_norm = _normalise(desc_raw)
+    desc_lower = desc_norm.lower()
+
+    # Aggregator / peer‑to‑peer detection.  If a description contains
+    # PayPal, Venmo, Cash App, Zelle or similar, attempt to extract the
+    # merchant after a star ("*") pattern.  If a merchant is found we
+    # classify that merchant using regex/keyword mappings.  Otherwise
+    # default to the generic 'Peer to Peer' category.
+    aggregator_keywords = [
+        "PAYPAL", "PP", "VENMO", "CASH APP", "CASHAPP", "ZELLE", "SQUARE CASH", "SQUARE", "CASH \*", "VENMO \*"
+    ]
+    upper_norm = desc_norm.upper()
+    # We search only if the description contains a known aggregator keyword
+    if any(agg in upper_norm for agg in aggregator_keywords):
+        # Attempt to extract a merchant after a star.  Many processors
+        # format descriptions like "PAYPAL * WALMART" or "PAYPAL *GIRARDWOK".
+        # We'll search for a star followed by one or more alphanumeric
+        # segments separated by spaces or punctuation.
+        m = re.search(r"\*\s*([A-Z0-9 ._-]+)", upper_norm)
+        if m:
+            merchant_fragment = m.group(1).strip()
+            # Normalise merchant fragment and classify using regex/keywords
+            merchant_norm = _normalise(merchant_fragment)
+            # Check regex patterns with the merchant only
+            if regex_mapping:
+                for pattern, cat in regex_mapping.items():
+                    try:
+                        if re.search(pattern, merchant_norm.lower()):
+                            return cat
+                    except re.error:
+                        continue
+            for keyword, category in mapping.items():
+                if keyword in merchant_norm.lower():
+                    return category
+            # If merchant fragment fails to match, fall back to 'Peer to Peer'
+            return "Peer to Peer"
+        # If no merchant found after star, treat as pure P2P
+        return "Peer to Peer"
+
+    # Step 3: check regex patterns on the full normalised description
     if regex_mapping:
         for pattern, cat in regex_mapping.items():
             try:
-                if re.search(pattern, desc):
+                if re.search(pattern, desc_lower):
                     return cat
             except re.error:
                 # Ignore invalid regex patterns
                 continue
-    # Fallback to keyword matching
+    # Step 4: keyword matching on the normalised description
     for keyword, category in mapping.items():
-        if keyword in desc:
+        if keyword in desc_lower:
             return category
+    # Step 5: nothing matched
     return "Uncategorized"
 
 
