@@ -66,6 +66,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 import pandas as pd
 import subprocess
 import tempfile
+import re  # For regex pattern matching
 # Attempt to import scikit‑learn for ML categorisation.  If unavailable
 # (e.g. not installed on the user's machine), we disable the ML
 # categorisation gracefully.
@@ -326,20 +327,59 @@ def load_categories(path: Optional[Path]) -> Dict[str, str]:
         return {k.lower(): v for k, v in mapping.items()}
 
 
-def categorise_row(description: str, mapping: Dict[str, str]) -> str:
-    """Assign a category to a transaction description.
+def load_regex_patterns(path: Optional[Path]) -> Dict[str, str]:
+    """Load a dictionary of regex patterns to categories.
 
-    The algorithm simply checks whether any keyword from the mapping
-    appears as a substring in the description.  Keywords are tried in
-    the order they appear in the mapping.  If no keyword matches the
-    description, the transaction is labelled as 'Uncategorized'.
+    Each key in the returned dictionary should be a valid regular
+    expression pattern (compatible with ``re.search``), and the value
+    is the corresponding category.  If ``path`` is None or the
+    file cannot be read, an empty dictionary is returned.
 
     Parameters
     ----------
-    description: str
+    path : Path or None
+        The path to a JSON file containing regex→category mappings.
+
+    Returns
+    -------
+    dict
+        A mapping of regex patterns to category names.
+    """
+    if path is None:
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            patterns = json.load(f)
+        # Ensure keys are strings and values are category names
+        return {str(p): c for p, c in patterns.items()}
+    except Exception:
+        return {}
+
+
+def categorise_row(
+    description: str,
+    mapping: Dict[str, str],
+    regex_mapping: Optional[Dict[str, str]] = None,
+) -> str:
+    """Assign a category to a transaction description using regex and keyword mapping.
+
+    The algorithm first checks any provided regular expression patterns and
+    returns the associated category on the first match.  If no regex
+    matches, it checks whether any keyword from the ``mapping`` appears
+    as a substring in the description (case‑insensitive).  Keywords are
+    tried in the order they appear in the mapping.  If no match is
+    found, the transaction is labelled as ``'Uncategorized'``.
+
+    Parameters
+    ----------
+    description : str
         The transaction description (memo or details) field.
-    mapping: dict
+    mapping : dict
         A mapping of lowercase keywords to category names.
+    regex_mapping : dict or None
+        A mapping of regex pattern strings to category names.  Patterns
+        are evaluated using :func:`re.search` on the description.  If
+        ``None`` or empty, regex matching is skipped.
 
     Returns
     -------
@@ -347,6 +387,16 @@ def categorise_row(description: str, mapping: Dict[str, str]) -> str:
         The assigned category.
     """
     desc = description.lower() if isinstance(description, str) else ""
+    # Check regex patterns first
+    if regex_mapping:
+        for pattern, cat in regex_mapping.items():
+            try:
+                if re.search(pattern, desc):
+                    return cat
+            except re.error:
+                # Ignore invalid regex patterns
+                continue
+    # Fallback to keyword matching
     for keyword, category in mapping.items():
         if keyword in desc:
             return category
@@ -571,6 +621,79 @@ def summarise_monthly_category(df: pd.DataFrame) -> pd.DataFrame:
         .sort_values(["YearMonth", "Expense"], ascending=[True, False])
     )
     return monthly
+
+
+def summarise_comparative_periods(
+    df: pd.DataFrame,
+    freq: str = "M",
+) -> pd.DataFrame:
+    """Compare spending across the two most recent periods.
+
+    This function aggregates total spending (expenses) by category for the two
+    most recent periods (months or quarters) in the data set and computes
+    the difference and percentage change between them.  Positive amounts
+    represent expenses (i.e. negative numbers in the original data are
+    converted to positive for reporting purposes).
+
+    Parameters
+    ----------
+    df : DataFrame
+        Transaction data with columns 'Date', 'Category' and 'Amount'.
+    freq : {'M', 'Q'}, default 'M'
+        The period frequency: 'M' for monthly comparisons or 'Q' for
+        quarterly comparisons.  See :func:`pandas.Grouper` for other
+        available frequencies.
+
+    Returns
+    -------
+    DataFrame
+        A DataFrame with columns ``['Category', 'Period1', 'Period2', 'Diff', 'PctChange']``.
+        ``Period1`` is the earlier period, ``Period2`` is the most recent period.
+        ``Diff`` is ``Period2 - Period1`` and ``PctChange`` is the percentage change.
+        If there are fewer than two distinct periods, an empty DataFrame is returned.
+    """
+    if df.empty:
+        return pd.DataFrame(columns=["Category", "Period1", "Period2", "Diff", "PctChange"])
+    # Ensure Date is datetime
+    dates = pd.to_datetime(df["Date"], errors="coerce")
+    # Build period labels
+    periods = dates.dt.to_period(freq)
+    df = df.copy()
+    df["Period"] = periods
+    # Compute total spend per category and period (expenses only; treat positive incomes separately)
+    grouped = (
+        df.groupby(["Category", "Period"])["Amount"]
+        .sum()
+        .reset_index()
+    )
+    # Convert amounts to positive for expenses (assuming negative values represent expenses)
+    grouped["Spend"] = grouped["Amount"].apply(lambda x: -x if x < 0 else x)
+    # Determine the two most recent periods
+    unique_periods = grouped["Period"].dropna().unique()
+    if len(unique_periods) < 2:
+        return pd.DataFrame(columns=["Category", "Period1", "Period2", "Diff", "PctChange"])
+    # Sort periods chronologically
+    unique_periods = sorted(unique_periods)
+    period1, period2 = unique_periods[-2], unique_periods[-1]
+    # Pivot to get spending per category for the two periods
+    pivot = grouped[grouped["Period"].isin([period1, period2])].pivot(
+        index="Category", columns="Period", values="Spend"
+    ).fillna(0)
+    # Ensure both periods are present
+    if period1 not in pivot.columns:
+        pivot[period1] = 0
+    if period2 not in pivot.columns:
+        pivot[period2] = 0
+    # Compute difference and percentage change
+    pivot = pivot.rename(columns={period1: "Period1", period2: "Period2"})
+    pivot["Diff"] = pivot["Period2"] - pivot["Period1"]
+    # Avoid division by zero
+    pivot["PctChange"] = pivot.apply(
+        lambda row: (row["Diff"] / row["Period1"]) * 100 if row["Period1"] != 0 else None,
+        axis=1,
+    )
+    pivot = pivot.reset_index()
+    return pivot[["Category", "Period1", "Period2", "Diff", "PctChange"]]
 
 
 def summarise_top_merchants(df: pd.DataFrame, n: int = 10) -> pd.DataFrame:
@@ -977,6 +1100,8 @@ def write_excel_report(
     top_merchants: pd.DataFrame,
     bad_habits: pd.DataFrame,
     suggestions: pd.DataFrame,
+    comparative_month: Optional[pd.DataFrame] = None,
+    comparative_quarter: Optional[pd.DataFrame] = None,
 ) -> None:
     """Create an Excel workbook report with multiple sheets and charts.
 
@@ -1002,6 +1127,11 @@ def write_excel_report(
         top_merchants.to_excel(writer, sheet_name="TopMerchants", index=False)
         bad_habits.to_excel(writer, sheet_name="BadHabits", index=False)
         suggestions.to_excel(writer, sheet_name="Suggestions", index=False)
+        # Comparative analyses (optional)
+        if comparative_month is not None and not comparative_month.empty:
+            comparative_month.to_excel(writer, sheet_name="CompareMonth", index=False)
+        if comparative_quarter is not None and not comparative_quarter.empty:
+            comparative_quarter.to_excel(writer, sheet_name="CompareQuarter", index=False)
 
         workbook = writer.book
         # Define a simple header style
@@ -1124,6 +1254,17 @@ def main(argv: Optional[List[str]] = None) -> None:
     parser.add_argument(
         "--top-bad-habits", type=int, default=5, help="Number of categories to highlight as potential bad habits.")
 
+    parser.add_argument(
+        "--regex-categories",
+        type=Path,
+        default=None,
+        help=(
+            "Path to a JSON file containing regular expression patterns to categories. "
+            "Each key should be a regex and the value the desired category. Patterns "
+            "are checked before keyword mappings."
+        ),
+    )
+
     args = parser.parse_args(argv)
 
     # Load all transactions
@@ -1137,10 +1278,11 @@ def main(argv: Optional[List[str]] = None) -> None:
         end = pd.to_datetime(args.end_date)
         df = df[df["Date"] <= end]
 
-    # Load category mapping
+    # Load category mapping and optional regex patterns
     mapping = load_categories(args.categories)
-    # Categorise using keyword mapping
-    df["Category"] = df["Description"].apply(lambda x: categorise_row(x, mapping))
+    regex_mapping = load_regex_patterns(args.regex_categories)
+    # Categorise using regex and keyword mappings
+    df["Category"] = df["Description"].apply(lambda x: categorise_row(x, mapping, regex_mapping))
     # Use ML to predict categories for uncategorised rows
     df = ml_categorise_uncategorised(df)
 
@@ -1149,11 +1291,25 @@ def main(argv: Optional[List[str]] = None) -> None:
     monthly = summarise_monthly_category(df)
     top_merch = summarise_top_merchants(df, n=args.top_merchants)
     bad_habits = detect_bad_habits(df, top_n=args.top_bad_habits)
+    # Comparative period analysis (monthly and quarterly)
+    comp_monthly = summarise_comparative_periods(df, freq="M")
+    comp_quarterly = summarise_comparative_periods(df, freq="Q")
 
     # Generate AI suggestions based on bad habits
     suggestions = generate_ai_suggestions(bad_habits)
     # Write report including suggestions
-    write_excel_report(df, args.output, summary, monthly, top_merch, bad_habits, suggestions)
+    # Write report including comparative analysis
+    write_excel_report(
+        df,
+        args.output,
+        summary,
+        monthly,
+        top_merch,
+        bad_habits,
+        suggestions,
+        comparative_month=comp_monthly,
+        comparative_quarter=comp_quarterly,
+    )
     print(f"Report written to {args.output.resolve()}")
 
 

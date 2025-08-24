@@ -69,6 +69,16 @@ def main() -> None:
         "Categories JSON (optional)", type=["json"], help="Upload a JSON file mapping keywords to categories, or leave blank to use defaults."
     )
 
+    # Optional regex pattern mapping file
+    regex_file = st.file_uploader(
+        "Regex Categories JSON (optional)",
+        type=["json"],
+        help=(
+            "Upload a JSON file where keys are regular expressions and values are categories. "
+            "These patterns are applied before keyword mappings to categorise transactions."
+        ),
+    )
+
     # Parameters for analysis
     top_merchants = st.number_input("Number of top merchants", min_value=1, max_value=50, value=10, step=1)
     top_bad_habits = st.number_input("Number of categories to highlight as bad habits", min_value=1, max_value=20, value=5, step=1)
@@ -201,7 +211,7 @@ def main() -> None:
         if end_date:
             df = df[df["Date"] <= pd.to_datetime(end_date)]
 
-        # Load category mapping
+        # Load keyword category mapping
         if categories_file is not None:
             try:
                 mapping_dict = json.load(categories_file)
@@ -212,8 +222,19 @@ def main() -> None:
         else:
             mapping = sa.load_categories(None)
 
-        # Categorise
-        df["Category"] = df["Description"].apply(lambda x: sa.categorise_row(x, mapping))
+        # Load regex category mapping
+        if regex_file is not None:
+            try:
+                regex_dict = json.load(regex_file)
+                regex_mapping = {str(k): v for k, v in regex_dict.items()}
+            except Exception as e:
+                st.error(f"Error reading regex categories JSON: {e}")
+                return
+        else:
+            regex_mapping = {}
+
+        # Categorise using regex and keyword mappings
+        df["Category"] = df["Description"].apply(lambda x: sa.categorise_row(x, mapping, regex_mapping))
         # Optionally use machine learning to categorise uncategorised rows
         if use_ml:
             df = sa.ml_categorise_uncategorised(df)
@@ -224,6 +245,10 @@ def main() -> None:
         top_merch = sa.summarise_top_merchants(df, n=int(top_merchants))
         bad_habits = sa.detect_bad_habits(df, top_n=int(top_bad_habits))
         suggestions = sa.generate_ai_suggestions(bad_habits)
+
+        # Comparative analysis of two most recent periods (monthly and quarterly)
+        comp_month = sa.summarise_comparative_periods(df, freq="M")
+        comp_quarter = sa.summarise_comparative_periods(df, freq="Q")
 
         # Allow the user to edit categories interactively
         st.subheader("Edit Categories (optional)")
@@ -290,7 +315,7 @@ def main() -> None:
         trends_df = pd.DataFrame(trend_records).sort_values("AvgMonthlyChange", ascending=False)
 
         # Display results in tabs
-        tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
             "Raw Data",
             "Category Summary",
             "Monthly Spending",
@@ -298,6 +323,7 @@ def main() -> None:
             "Bad Habits",
             "Suggestions",
             "Budgets & Trends",
+            "Comparative Analysis",
         ])
 
         with tab1:
@@ -433,11 +459,61 @@ def main() -> None:
             else:
                 st.info("Not enough monthly data to compute trends.")
 
+        # Comparative Analysis tab
+        with tab8:
+            st.subheader("Comparative Analysis")
+            freq_option = st.selectbox("Compare by", ["Monthly", "Quarterly"], index=0)
+            if freq_option == "Monthly":
+                st.write("### Comparison of the two most recent months")
+                if comp_month.empty:
+                    st.info("Not enough data to compute monthly comparisons.")
+                else:
+                    st.dataframe(comp_month, use_container_width=True)
+                    # Plot difference bar chart if Altair is available
+                    if _ALT_AVAILABLE and not comp_month.empty:
+                        bar = (
+                            alt.Chart(comp_month)
+                            .mark_bar()
+                            .encode(
+                                x=alt.X("Diff", title="Change in Spend"),
+                                y=alt.Y("Category", sort="-x"),
+                                tooltip=["Category", "Period1", "Period2", "Diff", "PctChange"],
+                            )
+                        )
+                        st.altair_chart(bar, use_container_width=True)
+            else:
+                st.write("### Comparison of the two most recent quarters")
+                if comp_quarter.empty:
+                    st.info("Not enough data to compute quarterly comparisons.")
+                else:
+                    st.dataframe(comp_quarter, use_container_width=True)
+                    if _ALT_AVAILABLE and not comp_quarter.empty:
+                        bar = (
+                            alt.Chart(comp_quarter)
+                            .mark_bar()
+                            .encode(
+                                x=alt.X("Diff", title="Change in Spend"),
+                                y=alt.Y("Category", sort="-x"),
+                                tooltip=["Category", "Period1", "Period2", "Diff", "PctChange"],
+                            )
+                        )
+                        st.altair_chart(bar, use_container_width=True)
+
         # Provide Excel download
         if st.button("Download full report (Excel)"):
             output = io.BytesIO()
             # Use the same report writer from spending_analysis
-            sa.write_excel_report(df, Path("report.xlsx"), summary, monthly, top_merch, bad_habits, suggestions)
+            sa.write_excel_report(
+                df,
+                Path("report.xlsx"),
+                summary,
+                monthly,
+                top_merch,
+                bad_habits,
+                suggestions,
+                comp_month,
+                comp_quarter,
+            )
             # Read the generated file and send to BytesIO
             with open("report.xlsx", "rb") as f:
                 output.write(f.read())
